@@ -202,13 +202,11 @@ input:focus-visible, select:focus-visible { outline: none; }
 .project:hover { border-color: var(--border-2); background: #1e271f; transform: translateY(-2px); }
 .project-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .status-select {
-  width: auto; padding: 4px 28px 4px 22px; border-radius: 99px; font-size: 12.5px; font-weight: 600;
+  width: auto; padding: 4px 28px 4px 12px; border-radius: 99px; font-size: 12.5px; font-weight: 600;
   border: 1px solid color-mix(in srgb, var(--c) 40%, transparent);
   background-color: color-mix(in srgb, var(--c) 14%, transparent); color: var(--c);
-  background-image:
-    radial-gradient(circle at 11px 50%, var(--c) 3.5px, transparent 4px),
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%238e9183' stroke-width='3' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-  background-position: 0 0, right 10px center; background-repeat: no-repeat;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%238e9183' stroke-width='3' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-position: right 10px center; background-repeat: no-repeat;
 }
 .status-select option { background: var(--surface); color: var(--text); }
 .project .icon-btn { color: var(--accent); }
@@ -394,6 +392,36 @@ table.list .num { text-align: right; font-family: var(--mono); white-space: nowr
 table.list td.act { width: 40px; padding: 4px; }
 table.list .proj-cell { display: flex; align-items: center; gap: 8px; }
 .neg { color: var(--clay); }
+table.list tfoot td { border-top: 1px solid var(--border-2); border-bottom: 0; }
+table.list td a { color: var(--text); text-decoration: none; }
+table.list td a:hover { color: var(--accent-strong); text-decoration: underline; }
+
+.rev-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.rev-controls select { width: auto; min-width: 160px; }
+.rev-layout.year { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.rev-chart-card { margin-bottom: 18px; }
+
+/* Yearly bar chart: one series, shared zero baseline. */
+.rev-chart { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; margin-top: 6px; }
+.rc-axis { position: relative; height: 220px; min-width: 44px; font: 11.5px var(--mono); color: var(--muted); }
+.rc-axis span { position: absolute; right: 0; transform: translateY(50%); white-space: nowrap; }
+.rc-plot { position: relative; height: 220px; }
+.rc-grid { position: absolute; left: 0; right: 0; height: 0; border-top: 1px dashed var(--border); }
+.rc-grid.zero { border-top: 1px solid var(--border-2); }
+.rc-cols { position: absolute; inset: 0; display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 2px; }
+.rc-col { position: relative; border: 0; padding: 0; background: transparent; cursor: pointer; border-radius: 6px; }
+.rc-col:hover, .rc-col:focus-visible { background: rgba(230, 225, 211, .04); }
+.rc-bar {
+  position: absolute; left: 50%; transform: translateX(-50%); width: min(60%, 34px);
+  background: var(--accent); border-radius: 4px 4px 0 0; transition: background .15s;
+}
+.rc-bar.neg { background: var(--clay); border-radius: 0 0 4px 4px; }
+.rc-col.best .rc-bar:not(.neg) { background: var(--accent-strong); }
+.rc-col:hover .rc-bar:not(.neg) { background: var(--heat-4); }
+.rc-col.future { opacity: .45; }
+.rc-labels { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 2px; margin-top: 8px; font-size: 11.5px; color: var(--muted); text-align: center; }
+.rc-labels span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rc-labels small { display: block; font-size: 10.5px; color: var(--text-2); }
 
 /* ---------- History ---------- */
 .history-day { margin-bottom: 22px; }
@@ -433,7 +461,7 @@ table.list .proj-cell { display: flex; align-items: center; gap: 8px; }
 
 /* ---------- Responsive ---------- */
 @media (max-width: 1000px) {
-  .timer-layout, .rev-layout { grid-template-columns: 1fr; }
+  .timer-layout, .rev-layout, .rev-layout.year { grid-template-columns: 1fr; }
   .settings-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 760px) {

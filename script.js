@@ -182,7 +182,7 @@ const S = {
   view: "projects",
   projFilter: "all", projSearch: "",
   heatRange: "last", heatProject: "all",
-  revMonth: monthKey(new Date()), revProject: "",
+  revMonth: monthKey(new Date()), revProject: "", revMode: "month", revYear: "last",
   histFilter: "all",
   statusDraft: null,
 };
@@ -488,6 +488,7 @@ document.addEventListener("change", (e) => {
   else if (t.id === "heat-range") { S.heatRange = t.value; renderHeatmap(); }
   else if (t.id === "heat-project") { S.heatProject = t.value; renderHeatmap(); }
   else if (t.id === "rev-project") S.revProject = t.value;
+  else if (t.id === "rev-year") { S.revYear = t.value; hideTip(); renderRevenue(); }
   else if (t.id === "currency") saveSetting("currency", t.value, `Currency set to ${t.value}`);
 });
 document.addEventListener("input", (e) => {
@@ -1326,41 +1327,87 @@ function renderHeatmap() {
 /* =========================================================================
    REVENUE
    ========================================================================= */
+const monthName = (mk, opts = { month: "long", year: "numeric" }) => {
+  const [y, m] = mk.split("-").map(Number);
+  return new Date(y, m - 1, 1).toLocaleString(undefined, opts);
+};
+const sumAmounts = (list) => list.reduce((a, r) => a + (r.amount || 0), 0);
+const revNameFor = (pid) => projName({ projectId: pid, projectName: S.revenue.find((r) => r.projectId === pid)?.projectName });
+
+function revenueByProject(list) {
+  const by = {};
+  list.forEach((r) => (by[r.projectId] = (by[r.projectId] || 0) + (r.amount || 0)));
+  return Object.entries(by).sort((a, b) => b[1] - a[1]);
+}
+
+function projectBars(ranked, total, emptyText) {
+  if (!ranked.length) return `<p class="muted small">${esc(emptyText)}</p>`;
+  const maxAbs = Math.max(1, ...ranked.map(([, a]) => Math.abs(a)));
+  return `<div class="bar-list">${ranked.map(([pid, amt]) => `
+    <div class="bar-item" style="--c:${amt < 0 ? "var(--clay)" : projColor(pid)}">
+      <span class="name"><i class="dot" style="--c:${projColor(pid)}"></i>${esc(revNameFor(pid))}</span>
+      <span class="val ${amt < 0 ? "neg" : ""}">${fmtMoney(amt)}${total > 0 && amt > 0 ? ` · ${Math.round((amt / total) * 100)}%` : ""}</span>
+      <div class="bar-track"><div class="bar-fill" style="width:${Math.max(2, (Math.abs(amt) / maxAbs) * 100)}%"></div></div>
+    </div>`).join("")}</div>`;
+}
+
+function deltaStat(label, cur, prev, prevText) {
+  const delta = prev ? ((cur - prev) / Math.abs(prev)) * 100 : null;
+  return `<div class="stat"><span>${esc(label)}</span>
+    <b class="${delta == null ? "" : delta >= 0 ? "up" : "down"}">${delta == null ? "—" : `${delta >= 0 ? "▲" : "▼"} ${Math.abs(delta).toFixed(0)}%`}</b>
+    <small>${fmtMoney(prev)} ${esc(prevText)}</small></div>`;
+}
+
 function renderRevenue() {
   const v = $("#view-revenue");
-  const mk = S.revMonth;
-  const [y, mo] = mk.split("-").map(Number);
-  const monthLabel = new Date(y, mo - 1, 1).toLocaleString(undefined, { month: "long", year: "numeric" });
-  const shortLabel = new Date(y, mo - 1, 1).toLocaleString(undefined, { month: "short" });
-  const entries = S.revenue.filter((r) => r.month === mk).sort((a, b) => b.createdAt - a.createdAt);
-  const total = entries.reduce((a, r) => a + (r.amount || 0), 0);
-  const prevTotal = S.revenue.filter((r) => r.month === shiftMonth(mk, -1)).reduce((a, r) => a + (r.amount || 0), 0);
-  const delta = prevTotal ? ((total - prevTotal) / Math.abs(prevTotal)) * 100 : null;
-  const by = {};
-  entries.forEach((r) => (by[r.projectId] = (by[r.projectId] || 0) + (r.amount || 0)));
-  const ranked = Object.entries(by).sort((a, b) => b[1] - a[1]);
-  const maxAbs = Math.max(1, ...ranked.map(([, a]) => Math.abs(a)));
-  const isCurrent = mk === monthKey(new Date());
-  if (S.revProject && !projectById(S.revProject)) S.revProject = "";
-  const nameFor = (pid) => projName({ projectId: pid, projectName: entries.find((r) => r.projectId === pid)?.projectName });
-  const sym = currencySymbol();
+  const yearly = S.revMode === "year";
+  const now = new Date();
+  const years = [...new Set([now.getFullYear(), ...S.revenue.map((r) => +String(r.month).slice(0, 4))])].filter(Boolean).sort((a, b) => b - a);
+  if (S.revYear !== "last" && !years.includes(+S.revYear)) S.revYear = "last";
+  const isCurrent = S.revMonth === monthKey(now);
 
   v.innerHTML = `
   <header class="view-head">
-    <div><h1>Revenue</h1><p class="muted">Monthly totals by project, entered manually.</p></div>
-    <div class="month-nav">
-      <button class="icon-btn" data-action="rev-month" data-dir="-1" aria-label="Previous month">${icon("chevL")}</button>
-      <b>${esc(monthLabel)}</b>
-      <button class="icon-btn" data-action="rev-month" data-dir="1" aria-label="Next month">${icon("chevR")}</button>
-      ${isCurrent ? "" : `<button class="btn small ghost" data-action="rev-today">This month</button>`}
+    <div><h1>Revenue</h1><p class="muted">${yearly ? "Yearly totals by month and project." : "Monthly totals by project, entered manually."}</p></div>
+    <div class="rev-controls">
+      <div class="seg" role="tablist">
+        <button class="${!yearly ? "on" : ""}" data-action="rev-mode" data-mode="month" role="tab" aria-selected="${!yearly}">Monthly</button>
+        <button class="${yearly ? "on" : ""}" data-action="rev-mode" data-mode="year" role="tab" aria-selected="${yearly}">Yearly</button>
+      </div>
+      ${yearly ? `
+      <select id="rev-year" aria-label="Year">
+        <option value="last" ${S.revYear === "last" ? "selected" : ""}>Last 12 months</option>
+        ${years.map((y) => `<option value="${y}" ${String(y) === String(S.revYear) ? "selected" : ""}>${y}</option>`).join("")}
+      </select>` : `
+      <div class="month-nav">
+        <button class="icon-btn" data-action="rev-month" data-dir="-1" aria-label="Previous month">${icon("chevL")}</button>
+        <b>${esc(monthName(S.revMonth))}</b>
+        <button class="icon-btn" data-action="rev-month" data-dir="1" aria-label="Next month">${icon("chevR")}</button>
+        ${isCurrent ? "" : `<button class="btn small ghost" data-action="rev-today">This month</button>`}
+      </div>`}
     </div>
   </header>
+  <div id="rev-body"></div>`;
+
+  if (yearly) renderRevenueYear(); else renderRevenueMonth();
+}
+
+function renderRevenueMonth() {
+  const body = $("#rev-body");
+  const mk = S.revMonth;
+  const monthLabel = monthName(mk);
+  const entries = S.revenue.filter((r) => r.month === mk).sort((a, b) => b.createdAt - a.createdAt);
+  const total = sumAmounts(entries);
+  const prevTotal = sumAmounts(S.revenue.filter((r) => r.month === shiftMonth(mk, -1)));
+  const ranked = revenueByProject(entries);
+  if (S.revProject && !projectById(S.revProject)) S.revProject = "";
+  const sym = currencySymbol();
+
+  body.innerHTML = `
   <div class="stat-row">
-    <div class="stat"><span>Total for ${esc(shortLabel)}</span><b class="${total < 0 ? "neg" : ""}">${fmtMoney(total)}</b><small>${entries.length} entr${entries.length === 1 ? "y" : "ies"}</small></div>
-    <div class="stat"><span>vs. previous month</span>
-      <b class="${delta == null ? "" : delta >= 0 ? "up" : "down"}">${delta == null ? "—" : `${delta >= 0 ? "▲" : "▼"} ${Math.abs(delta).toFixed(0)}%`}</b>
-      <small>${fmtMoney(prevTotal)} last month</small></div>
-    <div class="stat"><span>Top project</span><b>${ranked.length ? esc(nameFor(ranked[0][0])) : "—"}</b><small>${ranked.length ? fmtMoney(ranked[0][1]) : "No entries yet"}</small></div>
+    <div class="stat"><span>Total for ${esc(monthName(mk, { month: "short" }))}</span><b class="${total < 0 ? "neg" : ""}">${fmtMoney(total)}</b><small>${entries.length} entr${entries.length === 1 ? "y" : "ies"}</small></div>
+    ${deltaStat("vs. previous month", total, prevTotal, "last month")}
+    <div class="stat"><span>Top project</span><b>${ranked.length ? esc(revNameFor(ranked[0][0])) : "—"}</b><small>${ranked.length ? fmtMoney(ranked[0][1]) : "No entries yet"}</small></div>
   </div>
   <div class="rev-layout">
     <section class="card">
@@ -1375,8 +1422,6 @@ function renderRevenue() {
         <label class="field"><span>Amount${REQ}</span>
           <div class="money-input" style="--sym-w:${sym.length}ch"><span>${esc(sym)}</span>
           <input type="number" name="amount" step="0.01" inputmode="decimal" required placeholder="0.00"></div></label>
-        <label class="field"><span>Description</span>
-          <input type="text" name="label" maxlength="80" placeholder="Invoice, sale, payout…"></label>
         <button class="btn primary" type="submit">${icon("plus", 16)}Add to ${esc(monthLabel)}</button>
         <p class="hint">Use a negative amount for refunds or expenses.</p>
       </form>` : `<p class="muted small">Create a project first, then log its revenue here.</p>
@@ -1384,21 +1429,15 @@ function renderRevenue() {
     </section>
     <section class="card">
       <h3>By project</h3>
-      ${ranked.length ? `<div class="bar-list">${ranked.map(([pid, amt]) => `
-        <div class="bar-item" style="--c:${amt < 0 ? "var(--clay)" : projColor(pid)}">
-          <span class="name"><i class="dot" style="--c:${projColor(pid)}"></i>${esc(nameFor(pid))}</span>
-          <span class="val ${amt < 0 ? "neg" : ""}">${fmtMoney(amt)}${total > 0 && amt > 0 ? ` · ${Math.round((amt / total) * 100)}%` : ""}</span>
-          <div class="bar-track"><div class="bar-fill" style="width:${Math.max(2, (Math.abs(amt) / maxAbs) * 100)}%"></div></div>
-        </div>`).join("")}</div>` : `<p class="muted small">No revenue logged for ${esc(monthLabel)}.</p>`}
+      ${projectBars(ranked, total, `No revenue logged for ${monthLabel}.`)}
     </section>
   </div>
   <section class="card">
     <h3>Entries</h3>
     ${entries.length ? `<div class="table-wrap"><table class="list">
-      <thead><tr><th>Project</th><th>Description</th><th>Added</th><th class="num">Amount</th><th></th></tr></thead>
+      <thead><tr><th>Project</th><th>Added</th><th class="num">Amount</th><th></th></tr></thead>
       <tbody>${entries.map((r) => `<tr>
         <td><span class="proj-cell"><i class="dot" style="--c:${projColor(r.projectId)}"></i>${esc(projName(r))}</span></td>
-        <td class="muted">${esc(r.label || "—")}</td>
         <td class="muted">${fmtDate(r.createdAt, { month: "short", day: "numeric" })}</td>
         <td class="num ${r.amount < 0 ? "neg" : ""}">${fmtMoney(r.amount)}</td>
         <td class="act"><button class="icon-btn sm" data-action="rev-delete" data-id="${r.id}" title="Delete entry" aria-label="Delete entry">${icon("trash", 15)}</button></td>
@@ -1412,12 +1451,11 @@ function renderRevenue() {
     const amount = Math.round(parseFloat(f.amount.value) * 100) / 100;
     if (!p) { toast("Pick a project", "error"); f.project.focus(); return; }
     if (!Number.isFinite(amount) || amount === 0) { toast("Enter an amount", "error"); f.amount.focus(); return; }
-    const label = f.label.value.trim();
     S.revProject = p.id;
     $("button[type=submit]", f).disabled = true;
     try {
-      await addDoc(col("revenue"), { projectId: p.id, projectName: p.name, month: mk, amount, label, createdAt: Date.now() });
-      logHistory("revenue", `Added ${fmtMoney(amount)} to “${p.name}” for ${monthLabel}${label ? ` — ${label}` : ""}`);
+      await addDoc(col("revenue"), { projectId: p.id, projectName: p.name, month: mk, amount, createdAt: Date.now() });
+      logHistory("revenue", `Added ${fmtMoney(amount)} to “${p.name}” for ${monthLabel}`);
       toast(`Added ${fmtMoney(amount)}`);
     } catch (err) {
       console.error(err);
@@ -1427,6 +1465,111 @@ function renderRevenue() {
   });
 }
 
+// Rounds a chart maximum up to 1, 2, 2.5 or 5 × a power of ten.
+function niceCeil(x) {
+  if (x <= 0) return 0;
+  const p = 10 ** Math.floor(Math.log10(x));
+  return [1, 2, 2.5, 5, 10].map((m) => m * p).find((n) => n >= x);
+}
+
+function renderRevenueYear() {
+  const body = $("#rev-body");
+  const nowMk = monthKey(new Date());
+  const last = S.revYear === "last";
+  const endMk = last ? nowMk : `${S.revYear}-12`;
+  const months = Array.from({ length: 12 }, (_, i) => shiftMonth(endMk, i - 11));
+  const prevMonths = months.map((mk) => shiftMonth(mk, -12));
+  const inRange = new Set(months);
+  const entries = S.revenue.filter((r) => inRange.has(r.month));
+  const totals = Object.fromEntries(months.map((mk) => [mk, 0]));
+  const counts = Object.fromEntries(months.map((mk) => [mk, 0]));
+  entries.forEach((r) => { totals[r.month] += r.amount || 0; counts[r.month] += 1; });
+  const total = sumAmounts(entries);
+  const prevSet = new Set(prevMonths);
+  const prevTotal = sumAmounts(S.revenue.filter((r) => prevSet.has(r.month)));
+  const ranked = revenueByProject(entries);
+  const elapsed = months.filter((mk) => mk <= nowMk);
+  const avg = elapsed.length ? total / elapsed.length : 0;
+  const best = months.reduce((b, mk) => (counts[mk] && (!b || totals[mk] > totals[b]) ? mk : b), null);
+  const rangeLabel = last ? "the last 12 months" : S.revYear;
+  const prevLabel = last ? "the 12 months before" : `in ${+S.revYear - 1}`;
+
+  // Chart scale: a shared zero baseline, with room below it only if a month is negative.
+  const maxPos = niceCeil(Math.max(0, ...months.map((mk) => totals[mk])));
+  const maxNeg = niceCeil(Math.max(0, ...months.map((mk) => -totals[mk])));
+  const span = maxPos + maxNeg || 1;
+  const zero = (maxNeg / span) * 100; // % from the bottom
+  const pct = (val) => (Math.abs(val) / span) * 100;
+  const compact = (n) => fmtMoney(n, { notation: "compact", maximumFractionDigits: 1 });
+  const ticks = [maxPos, maxPos / 2, 0, ...(maxNeg ? [-maxNeg] : [])].filter((t, i, a) => a.indexOf(t) === i);
+
+  body.innerHTML = `
+  <div class="stat-row">
+    <div class="stat"><span>Total for ${esc(last ? "last 12 months" : S.revYear)}</span><b class="${total < 0 ? "neg" : ""}">${fmtMoney(total)}</b><small>${entries.length} entr${entries.length === 1 ? "y" : "ies"}</small></div>
+    <div class="stat"><span>Monthly average</span><b>${fmtMoney(avg)}</b><small>over ${elapsed.length} month${elapsed.length === 1 ? "" : "s"}</small></div>
+    <div class="stat"><span>Best month</span><b>${best ? esc(monthName(best, { month: "short", year: "numeric" })) : "—"}</b><small>${best ? fmtMoney(totals[best]) : "No entries yet"}</small></div>
+    ${deltaStat(last ? "vs. previous 12 months" : `vs. ${+S.revYear - 1}`, total, prevTotal, prevLabel)}
+  </div>
+  <section class="card rev-chart-card">
+    <h3>Revenue by month</h3>
+    ${entries.length ? `
+    <div class="rev-chart">
+      <div class="rc-axis">${ticks.map((t) => `<span style="bottom:${zero + (t >= 0 ? pct(t) : -pct(t))}%">${esc(compact(t))}</span>`).join("")}</div>
+      <div class="rc-plot">
+        ${ticks.map((t) => `<i class="rc-grid ${t === 0 ? "zero" : ""}" style="bottom:${zero + (t >= 0 ? pct(t) : -pct(t))}%"></i>`).join("")}
+        <div class="rc-cols">
+          ${months.map((mk) => {
+            const val = totals[mk];
+            const h = pct(val);
+            const pos = val >= 0;
+            return `<button class="rc-col ${mk > nowMk ? "future" : ""} ${mk === best ? "best" : ""}" data-action="rev-open-month" data-month="${mk}" aria-label="${esc(monthName(mk))}: ${esc(fmtMoney(val))}">
+              ${val ? `<span class="rc-bar ${pos ? "" : "neg"}" style="${pos ? `bottom:${zero}%` : `top:${100 - zero}%`};height:${Math.max(h, 0.8)}%"></span>` : ""}
+            </button>`;
+          }).join("")}
+        </div>
+      </div>
+      <div></div>
+      <div class="rc-labels">${months.map((mk) => `<span>${esc(monthName(mk, { month: "short" }))}${mk.endsWith("-01") && last ? `<small>${mk.slice(0, 4)}</small>` : ""}</span>`).join("")}</div>
+    </div>
+    <p class="hint">Hover a bar for details; click it to open that month.</p>` : `<p class="muted small">No revenue logged in ${esc(rangeLabel)}.</p>`}
+  </section>
+  <div class="rev-layout year">
+    <section class="card">
+      <h3>By project</h3>
+      ${projectBars(ranked, total, `No revenue logged in ${rangeLabel}.`)}
+    </section>
+    <section class="card">
+      <h3>Monthly totals</h3>
+      <div class="table-wrap"><table class="list">
+        <thead><tr><th>Month</th><th class="num">Entries</th><th class="num">Total</th></tr></thead>
+        <tbody>${months.slice().reverse().map((mk) => `<tr>
+          <td><a href="#revenue" data-action="rev-open-month" data-month="${mk}">${esc(monthName(mk))}</a></td>
+          <td class="num muted">${counts[mk] || "—"}</td>
+          <td class="num ${totals[mk] < 0 ? "neg" : ""}">${counts[mk] ? fmtMoney(totals[mk]) : "—"}</td>
+        </tr>`).join("")}</tbody>
+        <tfoot><tr><td><b>Total</b></td><td class="num">${entries.length}</td><td class="num"><b>${fmtMoney(total)}</b></td></tr></tfoot>
+      </table></div>
+    </section>
+  </div>`;
+
+  const cols = $(".rc-cols", body);
+  if (!cols) return;
+  const show = (e) => {
+    const c = e.target.closest(".rc-col");
+    if (!c) return;
+    const mk = c.dataset.month;
+    const rows = revenueByProject(entries.filter((r) => r.month === mk)).slice(0, 6);
+    showTip(c.querySelector(".rc-bar") || c, `<b>${fmtMoney(totals[mk])}</b> <span class="tt-date">${esc(monthName(mk))}</span>
+      ${rows.length ? `<ul>${rows.map(([pid, amt]) => `<li><i class="dot" style="--c:${projColor(pid)}"></i><span>${esc(revNameFor(pid))}</span><span>${esc(fmtMoney(amt))}</span></li>`).join("")}</ul>` : ""}`);
+  };
+  cols.addEventListener("mouseover", show);
+  cols.addEventListener("focusin", show);
+  cols.addEventListener("mouseleave", hideTip);
+  cols.addEventListener("focusout", hideTip);
+}
+
+actions["rev-mode"] = (el) => { S.revMode = el.dataset.mode; hideTip(); renderRevenue(); };
+actions["rev-open-month"] = (el) => { S.revMonth = el.dataset.month; S.revMode = "month"; hideTip(); renderRevenue(); window.scrollTo(0, 0); };
 actions["rev-month"] = (el) => { S.revMonth = shiftMonth(S.revMonth, +el.dataset.dir); renderRevenue(); };
 actions["rev-today"] = () => { S.revMonth = monthKey(new Date()); renderRevenue(); };
 actions["rev-delete"] = async (el) => {
