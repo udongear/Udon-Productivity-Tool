@@ -55,5 +55,14 @@
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
   <script type="module" src="script.js"></script>
+  <script>
+    // If the app script fails to load, show a message instead of spinning forever.
+    setTimeout(function () {
+      var boot = document.getElementById("boot");
+      if (boot && !boot.hidden) {
+        boot.innerHTML = '<p style="max-width:360px;padding:0 16px;text-align:center;color:#c2bdab">Udon couldn\'t start. Open the browser console (F12) for details, and check that <code>firebase-config.js</code> exports <code>firebaseConfig</code>.</p>';
+      }
+    }, 12000);
+  </script>
 </body>
 </html>
