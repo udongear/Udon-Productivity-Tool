@@ -35,7 +35,8 @@ const LIBS = {
   mammoth: "https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js",
   jszip: "https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js",
 };
-const APP_TITLE = "Udon Productivity Tool";
+const REQ = '<b class="req" aria-hidden="true">*</b>'; // red asterisk for required form fields
+const APP_TITLE ="Udon Productivity Tool";
 const VIEW_TITLES = { projects: "Projects", stopwatch: "Stopwatch", heatmap: "Heatmap", revenue: "Revenue", history: "History", settings: "Settings" };
 const PHASE_LABEL ={ work: "Focus", short: "Short break", long: "Long break" };
 const CATS = {
@@ -599,19 +600,19 @@ function openProjectModal(id) {
     body: `
     <form class="form" autocomplete="off" novalidate>
       <div class="row2">
-        <label class="field"><span>Name</span>
+        <label class="field"><span>Name${REQ}</span>
           <input type="text" name="name" required maxlength="80" value="${esc(p?.name || "")}" placeholder="e.g. Ceramics shop website"></label>
-        <label class="field"><span>Subname <em>optional</em></span>
+        <label class="field"><span>Subname</span>
           <input type="text" name="subname" maxlength="120" value="${esc(p?.subname || "")}" placeholder="Client, tagline or version"></label>
       </div>
       <div class="row2">
-        <label class="field"><span>Status</span>
+        <label class="field"><span>Status${REQ}</span>
           <select name="status" class="status-field" style="--c:${safeColor(statusOf(p?.status).color)}">${statusOptions(statusOf(p?.status).id)}</select></label>
-        <label class="field"><span>Link <em>optional</em></span>
+        <label class="field"><span>Link</span>
           <input type="url" name="link" value="${esc(p?.link || "")}" placeholder="https://"></label>
       </div>
-      <label class="field tasks-field"><span>Tasks <em>optional</em></span>
-        <textarea name="tasks" rows="9" maxlength="20000" placeholder="- Draft homepage copy&#10;- Send invoice&#10;- Review feedback">${esc(p?.tasks || "")}</textarea></label>
+      <label class="field tasks-field"><span>Tasks</span>
+        <textarea name="tasks" rows="9" maxlength="20000">${esc(p?.tasks || "")}</textarea></label>
       <section class="docs-block">
         <div class="docs-head"><h4>Documentation</h4>
           <label class="btn small ghost">${icon("upload", 16)}Attach<input type="file" multiple hidden accept="${ACCEPT}"></label></div>
@@ -1366,15 +1367,15 @@ function renderRevenue() {
       <h3>Add entry</h3>
       ${S.projects.length ? `
       <form id="rev-form" class="form" autocomplete="off">
-        <label class="field"><span>Project</span>
+        <label class="field"><span>Project${REQ}</span>
           <select id="rev-project" name="project" required>
             <option value="">Select a project…</option>
             ${S.projects.map((p) => `<option value="${p.id}" ${p.id === S.revProject ? "selected" : ""}>${esc(p.name)}</option>`).join("")}
           </select></label>
-        <label class="field"><span>Amount</span>
+        <label class="field"><span>Amount${REQ}</span>
           <div class="money-input" style="--sym-w:${sym.length}ch"><span>${esc(sym)}</span>
           <input type="number" name="amount" step="0.01" inputmode="decimal" required placeholder="0.00"></div></label>
-        <label class="field"><span>Description <em>optional</em></span>
+        <label class="field"><span>Description</span>
           <input type="text" name="label" maxlength="80" placeholder="Invoice, sale, payout…"></label>
         <button class="btn primary" type="submit">${icon("plus", 16)}Add to ${esc(monthLabel)}</button>
         <p class="hint">Use a negative amount for refunds or expenses.</p>
