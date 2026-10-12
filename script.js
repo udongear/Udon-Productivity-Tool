@@ -307,7 +307,7 @@ function subscribe() {
   const u = S.user;
   setDoc(userRef(), {
     profile: { name: u.displayName || "", email: u.email || "", photo: u.photoURL || "", lastLogin: Date.now() },
-  }, { merge: true }).catch(console.error);
+  }, { merge: true }).catch((err) => fail("Couldn't reach your Firebase data", err));
 
   const onErr = (what) => (err) => { console.error(what, err); toast(`Couldn't load ${what}: ${err.code || err.message}`, "error"); };
   const listen = (key, ref, map) => S.unsub.push(onSnapshot(ref, (snap) => {
@@ -317,12 +317,12 @@ function subscribe() {
     changed(key);
   }, onErr(key)));
 
-  S.unsub.push(onSnapshot(userRef(), (snap) => {
-    const data = snap.data();
-    if (!data?.settings) {
-      setDoc(userRef(), { settings: defaultSettings() }, { merge: true }).catch(console.error);
-    }
-    S.settings = normalizeSettings(data?.settings);
+  // Settings are never written here. Missing fields fall back to defaults in memory only, so a
+  // partial local snapshot (e.g. the profile write above, before the server responds) can't
+  // overwrite saved settings. Wait for the server's copy before the first render.
+  S.unsub.push(onSnapshot(userRef(), { includeMetadataChanges: true }, (snap) => {
+    if (!S.loaded.has("settings") && (snap.metadata.hasPendingWrites || snap.metadata.fromCache)) return;
+    S.settings = normalizeSettings(snap.data()?.settings);
     S.loaded.add("settings");
     changed("settings");
   }, onErr("settings")));
@@ -348,8 +348,14 @@ function changed(key) {
   });
 }
 
+// Reports a failed Firebase call with its reason, e.g. "Couldn't save project (permission-denied)".
+function fail(msg, err) {
+  console.error(msg, err);
+  toast(`${msg}${err?.code ? ` (${err.code.replace(/^firestore\//, "")})` : ""}`, "error");
+}
+
 function logHistory(cat, text) {
-  addDoc(col("history"), { cat, text, ts: Date.now() }).catch(console.error);
+  addDoc(col("history"), { cat, text, ts: Date.now() }).catch((err) => fail("Couldn't record history", err));
 }
 
 /* =========================================================================
@@ -587,7 +593,7 @@ async function changeStatus(pid, statusId) {
   try {
     await updateDoc(dref("projects", pid), { status: statusId, updatedAt: Date.now() });
     logHistory("project", `“${p.name}” status: ${from} → ${to}`);
-  } catch (err) { console.error(err); toast("Couldn't update status", "error"); }
+  } catch (err) { fail("Couldn't update status", err); }
 }
 
 function openProjectModal(id) {
@@ -661,7 +667,7 @@ function openProjectModal(id) {
       uploading.set(key, { name: f.name, size: f.size });
       draw();
       try { await uploadDoc(p, f); toast(`Attached ${f.name}`); }
-      catch (err) { console.error(err); toast(`Upload failed: ${f.name}`, "error"); }
+      catch (err) { fail(`Upload failed: ${f.name}`, err); }
       uploading.delete(key);
       draw();
     }
@@ -677,7 +683,7 @@ function openProjectModal(id) {
     else if (b.dataset.doc === "download") downloadDoc(d);
     else if (b.dataset.doc === "delete") {
       if (await confirmDialog(`Remove “${d.name}” from this project?`, { title: "Remove document", ok: "Remove", danger: true })) {
-        try { await deleteDocFile(d); toast("Document removed"); } catch (err) { console.error(err); toast("Couldn't remove document", "error"); }
+        try { await deleteDocFile(d); toast("Document removed"); } catch (err) { fail("Couldn't remove document", err); }
       }
     }
   });
@@ -689,7 +695,7 @@ function openProjectModal(id) {
       { title: "Delete project", ok: "Delete project", danger: true });
     if (!ok) return;
     m.close();
-    try { await deleteProject(p); toast(`Deleted ${p.name}`); } catch (err) { console.error(err); toast("Couldn't delete project", "error"); }
+    try { await deleteProject(p); toast(`Deleted ${p.name}`); } catch (err) { fail("Couldn't delete project", err); }
   });
 
   form.addEventListener("submit", async (e) => {
@@ -726,12 +732,11 @@ function openProjectModal(id) {
         m.close();
         toast(`Created ${name}`);
         for (const f of queued) {
-          try { await uploadDoc({ id: ref.id, name }, f); } catch (err) { console.error(err); toast(`Upload failed: ${f.name}`, "error"); }
+          try { await uploadDoc({ id: ref.id, name }, f); } catch (err) { fail(`Upload failed: ${f.name}`, err); }
         }
       }
     } catch (err) {
-      console.error(err);
-      toast("Couldn't save project", "error");
+      fail("Couldn't save project", err);
       submit.disabled = false;
     }
   });
@@ -808,7 +813,7 @@ async function downloadDoc(d) {
     const a = Object.assign(document.createElement("a"), { href: url, download: d.name });
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
-  } catch (err) { console.error(err); toast("Download failed", "error"); }
+  } catch (err) { fail("Download failed", err); }
 }
 
 async function viewDoc(d) {
@@ -995,7 +1000,7 @@ function logSession(projectId, start, seconds, kind) {
     projectId, projectName: name, start, end: start + seconds * 1000, seconds,
     date: dateKey(new Date(start)), kind, createdAt: Date.now(),
   }).then(() => logHistory("timer", `Logged ${fmtDur(seconds)} on “${name}”${kind === "pomodoro" ? " (Pomodoro)" : ""}`))
-    .catch((err) => { console.error(err); toast("Couldn't save session", "error"); });
+    .catch((err) => { fail("Couldn't save session", err); });
   toast(`Logged ${fmtDur(seconds)} to ${name}`);
 }
 
@@ -1058,7 +1063,7 @@ actions["delete-session"] = async (el) => {
   try {
     await deleteDoc(dref("sessions", s.id));
     logHistory("timer", `Removed ${fmtDur(s.seconds)} session from “${projName(s)}” (${fmtDate(s.start)})`);
-  } catch (err) { console.error(err); toast("Couldn't remove session", "error"); }
+  } catch (err) { fail("Couldn't remove session", err); }
 };
 
 function renderStopwatch() {
@@ -1458,8 +1463,7 @@ function renderRevenueMonth() {
       logHistory("revenue", `Added ${fmtMoney(amount)} to “${p.name}” for ${monthLabel}`);
       toast(`Added ${fmtMoney(amount)}`);
     } catch (err) {
-      console.error(err);
-      toast("Couldn't save entry", "error");
+      fail("Couldn't save entry", err);
       $("button[type=submit]", f).disabled = false;
     }
   });
@@ -1580,7 +1584,7 @@ actions["rev-delete"] = async (el) => {
     await deleteDoc(dref("revenue", r.id));
     const [y, m] = r.month.split("-").map(Number);
     logHistory("revenue", `Deleted ${fmtMoney(r.amount)} from “${projName(r)}” (${new Date(y, m - 1, 1).toLocaleString(undefined, { month: "long", year: "numeric" })})`);
-  } catch (err) { console.error(err); toast("Couldn't delete entry", "error"); }
+  } catch (err) { fail("Couldn't delete entry", err); }
 };
 
 /* =========================================================================
@@ -1752,12 +1756,12 @@ actions["status-save"] = async () => {
       { title: "Reassign projects", ok: "Save and reassign" });
     if (!ok) return;
   }
+  const before = S.settings.statuses;
   try {
     const batch = writeBatch(db);
-    batch.update(userRef(), { "settings.statuses": draft });
+    batch.set(userRef(), { settings: { statuses: draft } }, { merge: true });
     affected.forEach((p) => batch.update(dref("projects", p.id), { status: draft[0].id, updatedAt: Date.now() }));
     await batch.commit();
-    const before = S.settings.statuses;
     const added = draft.filter((s) => !before.some((b) => b.id === s.id)).map((s) => s.name);
     const removed = before.filter((b) => !keep.has(b.id)).map((s) => s.name);
     const parts = [];
@@ -1766,7 +1770,7 @@ actions["status-save"] = async () => {
     if (!parts.length) parts.push("updated names, colors or order");
     logHistory("settings", `Statuses ${parts.join("; ")}`);
     toast("Statuses saved");
-  } catch (err) { console.error(err); toast("Couldn't save statuses", "error"); }
+  } catch (err) { fail("Couldn't save statuses", err); }
 };
 
 async function savePomodoro(e) {
@@ -1787,10 +1791,11 @@ async function savePomodoro(e) {
 
 async function saveSetting(key, value, historyText) {
   try {
-    await updateDoc(userRef(), { [`settings.${key}`]: value });
+    // set+merge deep-merges into the settings map and works even if the user doc doesn't exist yet.
+    await setDoc(userRef(), { settings: { [key]: value } }, { merge: true });
     logHistory("settings", historyText);
     toast("Saved");
-  } catch (err) { console.error(err); toast("Couldn't save setting", "error"); }
+  } catch (err) { fail("Couldn't save setting", err); }
 }
 
 actions["logout"] = async () => {
@@ -1824,7 +1829,7 @@ actions["clear-history"] = async () => {
       await batch.commit();
     }
     toast("History cleared");
-  } catch (err) { console.error(err); toast("Couldn't clear history", "error"); }
+  } catch (err) { fail("Couldn't clear history", err); }
 };
 
 /* ========================================================================= */
