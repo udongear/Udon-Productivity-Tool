@@ -35,7 +35,9 @@ const LIBS = {
   mammoth: "https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js",
   jszip: "https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js",
 };
-const PHASE_LABEL = { work: "Focus", short: "Short break", long: "Long break" };
+const APP_TITLE = "Udon Productivity Tool";
+const VIEW_TITLES = { projects: "Projects", stopwatch: "Stopwatch", heatmap: "Heatmap", revenue: "Revenue", history: "History", settings: "Settings" };
+const PHASE_LABEL ={ work: "Focus", short: "Short break", long: "Long break" };
 const CATS = {
   project: { label: "Projects", color: "#8db36f", icon: "folder" },
   doc: { label: "Documents", color: "#c9a45c", icon: "file" },
@@ -139,6 +141,16 @@ function currencySymbol() {
       .formatToParts(0).find((p) => p.type === "currency")?.value || "$";
   } catch { return "$"; }
 }
+// e.g. "USD ($) — US Dollar", "EUR (€) — Euro"
+function currencyLabel(code) {
+  let sym = code, name = "";
+  try {
+    sym = new Intl.NumberFormat("en-US", { style: "currency", currency: code, currencyDisplay: "narrowSymbol" })
+      .formatToParts(0).find((p) => p.type === "currency")?.value || code;
+  } catch { /* keep code */ }
+  try { name = new Intl.DisplayNames(["en"], { type: "currency" }).of(code) || ""; } catch { /* no names */ }
+  return `${code}${sym !== code ? ` (${sym})` : ""}${name ? ` — ${name}` : ""}`;
+}
 function hostOf(url) {
   try { return new URL(url).host.replace(/^www\./, "") + new URL(url).pathname.replace(/\/$/, ""); } catch { return url; }
 }
@@ -180,6 +192,9 @@ const col = (...path) => collection(db, "users", S.user.uid, ...path);
 const dref = (...path) => doc(db, "users", S.user.uid, ...path);
 
 const statusOf = (id) => S.settings.statuses.find((s) => s.id === id) || S.settings.statuses[0] || { id: "", name: "—", color: "#8e9183" };
+// <option>s for a status dropdown, each tinted with its color from Settings.
+const statusOptions = (selectedId) => S.settings.statuses.map((x) =>
+  `<option value="${esc(x.id)}" style="color:${safeColor(x.color)}" ${x.id === selectedId ? "selected" : ""}>● ${esc(x.name)}</option>`).join("");
 const projectById = (id) => S.projects.find((p) => p.id === id);
 const projName = (rec) => projectById(rec.projectId)?.name || (rec.projectName ? `${rec.projectName} (deleted)` : "Deleted project");
 const projColor = (id) => safeColor(projectById(id) ? statusOf(projectById(id).status).color : "#5b5f55");
@@ -268,7 +283,7 @@ function endSession() {
   modals.slice().forEach((m) => m.close());
   Object.assign(S, { user: null, projects: [], docs: [], sessions: [], revenue: [], history: [], loaded: new Set(), settings: defaultSettings() });
   T = null;
-  document.title = "Udon";
+  updateTitle();
   $("#boot").hidden = true;
   $("#app").hidden = true;
   $("#auth-screen").hidden = false;
@@ -346,6 +361,7 @@ function route() {
   $$(".nav-item").forEach((a) => a.classList.toggle("active", a.dataset.view === S.view));
   $$(".view").forEach((s) => (s.hidden = s.id !== `view-${S.view}`));
   hideTip();
+  if (!T?.running) updateTitle();
   renderView(S.view);
   window.scrollTo(0, 0);
 }
@@ -391,9 +407,15 @@ function openModal({ title, body, size = "", actions = "", onClose }) {
       onClose?.();
       prevFocus?.focus?.();
     },
+    // User-initiated close (Esc, backdrop, ✕, Cancel): asks first if `guard` reports unsaved changes.
+    guard: null,
+    async dismiss() {
+      if (m.guard?.() && !(await confirmDialog("You have unsaved changes. Close without saving?", { title: "Discard changes", ok: "Discard", danger: true }))) return;
+      m.close();
+    },
   };
-  wrap.addEventListener("mousedown", (e) => { if (e.target === wrap) m.close(); });
-  $$("[data-role=close],[data-role=cancel]", wrap).forEach((b) => b.addEventListener("click", m.close));
+  wrap.addEventListener("mousedown", (e) => { if (e.target === wrap) m.dismiss(); });
+  $$("[data-role=close],[data-role=cancel]", wrap).forEach((b) => b.addEventListener("click", m.dismiss));
   modals.push(m);
   requestAnimationFrame(() => {
     wrap.classList.add("open");
@@ -444,7 +466,7 @@ function showTip(target, html) {
 function hideTip() { const t = tip(); if (t) t.hidden = true; }
 
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && modals.length) modals[modals.length - 1].close();
+  if (e.key === "Escape" && modals.length) modals[modals.length - 1].dismiss();
 });
 
 /* =========================================================================
@@ -532,7 +554,7 @@ function projectCard(p, secs, docs) {
   <article class="card project" data-action="open-project" data-id="${p.id}" style="--c:${safeColor(s.color)}" tabindex="0">
     <div class="project-top">
       <select class="status-select" data-pid="${p.id}" aria-label="Status">
-        ${S.settings.statuses.map((x) => `<option value="${esc(x.id)}" ${x.id === s.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}
+        ${statusOptions(s.id)}
       </select>
       <button class="icon-btn" data-action="track-project" data-id="${p.id}" title="Start timer for this project" aria-label="Start timer">${icon("play", 16)}</button>
     </div>
@@ -573,18 +595,23 @@ function openProjectModal(id) {
   const uploading = new Map();
   const m = openModal({
     title: p ? "Edit project" : "New project",
+    size: "lg",
     body: `
     <form class="form" autocomplete="off" novalidate>
-      <label class="field"><span>Name</span>
-        <input type="text" name="name" required maxlength="80" value="${esc(p?.name || "")}" placeholder="e.g. Ceramics shop website"></label>
-      <label class="field"><span>Subname <em>optional</em></span>
-        <input type="text" name="subname" maxlength="120" value="${esc(p?.subname || "")}" placeholder="Client, tagline or version"></label>
+      <div class="row2">
+        <label class="field"><span>Name</span>
+          <input type="text" name="name" required maxlength="80" value="${esc(p?.name || "")}" placeholder="e.g. Ceramics shop website"></label>
+        <label class="field"><span>Subname <em>optional</em></span>
+          <input type="text" name="subname" maxlength="120" value="${esc(p?.subname || "")}" placeholder="Client, tagline or version"></label>
+      </div>
       <div class="row2">
         <label class="field"><span>Status</span>
-          <select name="status">${S.settings.statuses.map((s) => `<option value="${esc(s.id)}" ${s.id === statusOf(p?.status).id ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select></label>
+          <select name="status" class="status-field" style="--c:${safeColor(statusOf(p?.status).color)}">${statusOptions(statusOf(p?.status).id)}</select></label>
         <label class="field"><span>Link <em>optional</em></span>
           <input type="url" name="link" value="${esc(p?.link || "")}" placeholder="https://"></label>
       </div>
+      <label class="field tasks-field"><span>Tasks <em>optional</em></span>
+        <textarea name="tasks" rows="9" maxlength="20000" placeholder="- Draft homepage copy&#10;- Send invoice&#10;- Review feedback">${esc(p?.tasks || "")}</textarea></label>
       <section class="docs-block">
         <div class="docs-head"><h4>Documentation</h4>
           <label class="btn small ghost">${icon("upload", 16)}Attach<input type="file" multiple hidden accept="${ACCEPT}"></label></div>
@@ -614,6 +641,12 @@ function openProjectModal(id) {
   };
   m.refresh = draw;
   draw();
+
+  let dirty = false;
+  form.addEventListener("input", (e) => { if (e.target !== fileInput) dirty = true; });
+  m.guard = () => dirty || queued.length > 0;
+  const statusSel = form.elements.namedItem("status");
+  statusSel.addEventListener("change", () => statusSel.style.setProperty("--c", safeColor(statusOf(statusSel.value).color)));
 
   fileInput.addEventListener("change", async () => {
     const files = [...fileInput.files];
@@ -665,7 +698,10 @@ function openProjectModal(id) {
     const rawLink = String(fd.get("link") || "").trim();
     const link = normalizeLink(rawLink);
     if (rawLink && !link) { form.elements.namedItem("link").focus(); toast("That link doesn't look valid", "error"); return; }
-    const data = { name, subname: String(fd.get("subname") || "").trim(), status: String(fd.get("status")), link };
+    const data = {
+      name, subname: String(fd.get("subname") || "").trim(), status: String(fd.get("status")), link,
+      tasks: String(fd.get("tasks") || "").replace(/\s+$/, ""),
+    };
     const submit = $("button[type=submit]", form);
     submit.disabled = true;
     try {
@@ -675,6 +711,7 @@ function openProjectModal(id) {
         if (data.subname !== (p.subname || "")) changes.push("subname updated");
         if (data.status !== statusOf(p.status).id) changes.push(`status: ${statusOf(p.status).name} → ${statusOf(data.status).name}`);
         if (data.link !== (p.link || "")) changes.push(data.link ? "link updated" : "link removed");
+        if (data.tasks !== (p.tasks || "")) changes.push("tasks updated");
         if (changes.length) {
           await updateDoc(dref("projects", p.id), { ...data, updatedAt: Date.now() });
           logHistory("project", `“${p.name}” ${changes.join(", ")}`);
@@ -1086,6 +1123,13 @@ function renderStopwatch() {
   updateTimerDisplay();
 }
 
+// Tab title: "<timer> · Udon Productivity Tool" while a timer runs, otherwise "<Tab> · Udon Productivity Tool".
+function updateTitle(timerText = "") {
+  const lead = timerText || (S.user ? VIEW_TITLES[S.view] : "");
+  const next = lead ? `${lead} · ${APP_TITLE}` : APP_TITLE;
+  if (document.title !== next) document.title = next;
+}
+
 function updateTimerDisplay() {
   if (!T) return;
   const e = elapsed();
@@ -1103,7 +1147,7 @@ function updateTimerDisplay() {
     phase = T.running ? "Tracking" : active ? "Paused" : "Ready";
     sub = projectById(T.projectId)?.name || "";
   }
-  document.title = T.running ? `${text} · ${T.mode === "pomodoro" ? PHASE_LABEL[T.phase] : "Udon"}` : "Udon";
+  updateTitle(T.running ? `${text} ${T.mode === "pomodoro" ? PHASE_LABEL[T.phase] : "Tracking"}` : "");
   const dot = $("#live-dot");
   if (dot) dot.hidden = !T.running;
   const el = $("#timer-time");
@@ -1468,13 +1512,17 @@ function renderSettings() {
     </section>
 
     <section class="card">
-      <div class="card-head"><h3>Pomodoro</h3><p>Lengths in minutes.</p></div>
+      <div class="card-head"><h3>Pomodoro</h3><p>Focus and break lengths.</p></div>
       <form id="pomo-form" class="form">
         <div class="pomo-grid">
-          <label class="field"><span>Focus</span><input type="number" name="work" min="1" max="180" value="${P.work}"></label>
-          <label class="field"><span>Short break</span><input type="number" name="short" min="1" max="60" value="${P.short}"></label>
-          <label class="field"><span>Long break</span><input type="number" name="long" min="1" max="120" value="${P.long}"></label>
-          <label class="field"><span>Long every</span><input type="number" name="longEvery" min="2" max="12" value="${P.longEvery}"></label>
+          ${[
+            ["work", "Focus", 1, 180, "min"],
+            ["short", "Short break", 1, 60, "min"],
+            ["long", "Long break", 1, 120, "min"],
+            ["longEvery", "Long break after", 2, 12, "sessions"],
+          ].map(([name, label, min, max, unit]) => `
+          <label class="field"><span>${label}</span>
+            <span class="unit-input"><input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="3" name="${name}" data-min="${min}" data-max="${max}" value="${P[name]}"><span>${unit}</span></span></label>`).join("")}
         </div>
         <div class="pomo-toggles">
           <label class="toggle"><input type="checkbox" name="autoStart" ${P.autoStart ? "checked" : ""}>Auto-start next phase</label>
@@ -1487,7 +1535,7 @@ function renderSettings() {
     <section class="card">
       <h3>Preferences</h3>
       <label class="field"><span>Currency for revenue</span>
-        <select id="currency">${CURRENCIES.map((c) => `<option value="${c}" ${c === S.settings.currency ? "selected" : ""}>${c}</option>`).join("")}</select></label>
+        <select id="currency">${CURRENCIES.map((c) => `<option value="${c}" ${c === S.settings.currency ? "selected" : ""}>${esc(currencyLabel(c))}</option>`).join("")}</select></label>
     </section>
 
     <section class="card">
@@ -1510,7 +1558,11 @@ function renderSettings() {
     if (e.target.type === "color") s.color = e.target.value;
     else s.name = e.target.value;
   });
-  $("#pomo-form").addEventListener("submit", savePomodoro);
+  const pomo = $("#pomo-form");
+  pomo.addEventListener("submit", savePomodoro);
+  pomo.addEventListener("input", (e) => {
+    if (e.target.closest(".unit-input")) e.target.value = e.target.value.replace(/\D/g, "");
+  });
 }
 
 function drawStatusRows() {
@@ -1576,7 +1628,7 @@ actions["status-save"] = async () => {
 async function savePomodoro(e) {
   e.preventDefault();
   const f = e.target;
-  const clamp = (v, lo, hi, d) => { const n = Math.round(+v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
+  const clamp = (v, lo, hi, d) => { const n = parseInt(v, 10); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
   const P = S.settings.pomodoro;
   const next = {
     work: clamp(f.work.value, 1, 180, P.work),
