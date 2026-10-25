@@ -90,6 +90,8 @@ const ICONS = {
   logout: '<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l-5-5 5-5M5 12h11"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
   alert: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5M12 16h.01"/>',
+  archive: '<rect x="3" y="4" width="18" height="4.5" rx="1"/><path d="M5 8.5V18a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5M10 12.5h4"/>',
+  restore: '<path d="M4 12a8 8 0 1 0 2.4-5.7L4 8.5"/><path d="M4 4v4.5h4.5"/>',
 };
 const icon = (name, size = 18) =>
   `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ""}</svg>`;
@@ -197,6 +199,8 @@ const statusOf = (id) => S.settings.statuses.find((s) => s.id === id) || S.setti
 const statusOptions = (selectedId) => S.settings.statuses.map((x) =>
   `<option value="${esc(x.id)}" style="color:${safeColor(x.color)}" ${x.id === selectedId ? "selected" : ""}>● ${esc(x.name)}</option>`).join("");
 const projectById = (id) => S.projects.find((p) => p.id === id);
+// Archived projects are hidden from the Projects tab and pickers but keep their time, revenue and docs.
+const liveProjects = () => S.projects.filter((p) => !p.archived);
 const projName = (rec) => projectById(rec.projectId)?.name || (rec.projectName ? `${rec.projectName} (deleted)` : "Deleted project");
 const projColor = (id) => safeColor(projectById(id) ? statusOf(projectById(id).status).color : "#5b5f55");
 
@@ -517,9 +521,10 @@ function totalsByProject() {
 function renderProjects() {
   const v = $("#view-projects");
   const counts = {};
-  S.projects.forEach((p) => (counts[p.status] = (counts[p.status] || 0) + 1));
+  const live = liveProjects();
+  live.forEach((p) => (counts[p.status] = (counts[p.status] || 0) + 1));
   if (S.projFilter !== "all" && !S.settings.statuses.some((s) => s.id === S.projFilter)) S.projFilter = "all";
-  const n = S.projects.length;
+  const n = live.length;
   v.innerHTML = `
     <header class="view-head">
       <div><h1>Projects</h1><p class="muted">${n} project${n === 1 ? "" : "s"}</p></div>
@@ -539,13 +544,14 @@ function renderProjects() {
 function renderProjectGrid() {
   const grid = $("#proj-grid");
   if (!grid) return;
-  if (!S.projects.length) {
+  const live = liveProjects();
+  if (!live.length) {
     grid.innerHTML = emptyState("folder", "No projects yet", "Create your first project to start tracking time, revenue and documentation.",
       `<button class="btn primary" data-action="new-project">${icon("plus")}New project</button>`);
     return;
   }
   const q = S.projSearch.trim().toLowerCase();
-  const list = S.projects.filter((p) =>
+  const list = live.filter((p) =>
     (S.projFilter === "all" || statusOf(p.status).id === S.projFilter) &&
     (!q || `${p.name} ${p.subname || ""}`.toLowerCase().includes(q)));
   if (!list.length) { grid.innerHTML = emptyState("search", "Nothing matches", "Try another search or status filter."); return; }
@@ -627,7 +633,8 @@ function openProjectModal(id) {
         <p class="hint">PDF, Word (.docx / .doc) or OpenDocument (.odt), up to 15 MB each.</p>
       </section>
       <div class="form-foot">
-        ${p ? `<button type="button" class="btn danger ghost" data-role="delete">${icon("trash", 16)}Delete</button>` : ""}
+        ${p ? `<button type="button" class="btn danger ghost" data-role="delete">${icon("trash", 16)}Delete</button>
+          <button type="button" class="btn ghost" data-role="archive">${icon(p.archived ? "restore" : "archive", 16)}${p.archived ? "Restore" : "Archive"}</button>` : ""}
         <div class="spacer"></div>
         <button type="button" class="btn ghost" data-role="cancel">Cancel</button>
         <button type="submit" class="btn primary">${p ? "Save changes" : "Create project"}</button>
@@ -698,6 +705,12 @@ function openProjectModal(id) {
     try { await deleteProject(p); toast(`Deleted ${p.name}`); } catch (err) { fail("Couldn't delete project", err); }
   });
 
+  $("[data-role=archive]", m.el)?.addEventListener("click", async () => {
+    if (dirty && !(await confirmDialog("You have unsaved changes. Discard them and continue?", { title: "Discard changes", ok: "Discard", danger: true }))) return;
+    m.close();
+    setArchived(p, !p.archived);
+  });
+
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(form);
@@ -764,6 +777,54 @@ async function deleteProject(p) {
   await deleteDoc(dref("projects", p.id));
   logHistory("project", `Deleted project “${p.name}”${docs.length ? ` (with ${docs.length} document${docs.length === 1 ? "" : "s"})` : ""}`);
   if (T && T.projectId === p.id && !T.running && elapsed() === 0) { T.projectId = ""; saveTimer(); }
+}
+
+async function setArchived(p, archived) {
+  try {
+    await updateDoc(dref("projects", p.id), { archived, archivedAt: archived ? Date.now() : null, updatedAt: Date.now() });
+    logHistory("project", `${archived ? "Archived" : "Restored"} project “${p.name}”`);
+    toast(`${archived ? "Archived" : "Restored"} ${p.name}`);
+    if (archived && T && T.projectId === p.id && !T.running && elapsed() === 0) { T.projectId = ""; saveTimer(); }
+  } catch (err) { fail(`Couldn't ${archived ? "archive" : "restore"} project`, err); }
+}
+
+function openArchiveModal() {
+  const m = openModal({ title: "Archived projects", size: "lg", body: `<div class="doc-list archive-list"></div>` });
+  const listEl = $(".archive-list", m.el);
+  const draw = () => {
+    const list = S.projects.filter((p) => p.archived).sort((a, b) => (b.archivedAt || 0) - (a.archivedAt || 0));
+    if (!list.length) { listEl.innerHTML = `<p class="doc-empty">No archived projects. Use “Archive” in a project to move it here.</p>`; return; }
+    const time = totalsByProject();
+    listEl.innerHTML = list.map((p) => {
+      const s = statusOf(p.status);
+      const meta = [s.name, fmtDur(time[p.id] || 0), p.archivedAt ? `archived ${fmtDate(p.archivedAt)}` : ""].filter(Boolean).join(" · ");
+      return `<div class="doc-row">
+        <i class="dot" style="--c:${safeColor(s.color)}"></i>
+        <div class="doc-info"><b title="${esc(p.name)}">${esc(p.name)}${p.subname ? ` <span class="muted">— ${esc(p.subname)}</span>` : ""}</b><small>${esc(meta)}</small></div>
+        <button type="button" class="icon-btn sm" data-arch="open" data-id="${p.id}" title="Open" aria-label="Open">${icon("eye", 16)}</button>
+        <button type="button" class="icon-btn sm" data-arch="restore" data-id="${p.id}" title="Restore to Projects" aria-label="Restore">${icon("restore", 16)}</button>
+        <button type="button" class="icon-btn sm" data-arch="delete" data-id="${p.id}" title="Delete" aria-label="Delete">${icon("trash", 16)}</button>
+      </div>`;
+    }).join("");
+  };
+  m.refresh = draw;
+  draw();
+
+  listEl.addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-arch]");
+    const p = b && projectById(b.dataset.id);
+    if (!p) return;
+    if (b.dataset.arch === "open") openProjectModal(p.id);
+    else if (b.dataset.arch === "restore") setArchived(p, false);
+    else if (b.dataset.arch === "delete") {
+      const docs = S.docs.filter((d) => d.projectId === p.id).length;
+      const ok = await confirmDialog(
+        `Delete “${p.name}”${docs ? ` and its ${docs} document${docs === 1 ? "" : "s"}` : ""}? Logged time and revenue stay in your heatmap and reports.`,
+        { title: "Delete project", ok: "Delete project", danger: true });
+      if (!ok) return;
+      try { await deleteProject(p); toast(`Deleted ${p.name}`); } catch (err) { fail("Couldn't delete project", err); }
+    }
+  });
 }
 
 /* ---------- Documents (stored as chunked bytes in Firestore) ---------- */
@@ -1014,7 +1075,7 @@ actions["timer-mode"] = (el) => {
 };
 actions["timer-start"] = () => {
   if (!T.projectId || !projectById(T.projectId)) {
-    toast(S.projects.length ? "Pick a project first" : "Create a project first", "error");
+    toast(liveProjects().length ? "Pick a project first" : "Create a project first", "error");
     $("#timer-project")?.focus();
     return;
   }
@@ -1090,8 +1151,8 @@ function renderStopwatch() {
       </div>
       <label class="field project-pick"><span>Project</span>
         <select id="timer-project" ${active ? "disabled" : ""}>
-          <option value="">${S.projects.length ? "Select a project…" : "No projects yet"}</option>
-          ${S.projects.map((p) => `<option value="${p.id}" ${p.id === T.projectId ? "selected" : ""}>${esc(p.name)}${p.subname ? ` — ${esc(p.subname)}` : ""}</option>`).join("")}
+          <option value="">${liveProjects().length ? "Select a project…" : "No projects yet"}</option>
+          ${S.projects.filter((p) => !p.archived || p.id === T.projectId).map((p) => `<option value="${p.id}" ${p.id === T.projectId ? "selected" : ""}>${esc(p.name)}${p.subname ? ` — ${esc(p.subname)}` : ""}</option>`).join("")}
         </select>
       </label>
       <div class="dial">
@@ -1417,12 +1478,12 @@ function renderRevenueMonth() {
   <div class="rev-layout">
     <section class="card">
       <h3>Add entry</h3>
-      ${S.projects.length ? `
+      ${liveProjects().length ? `
       <form id="rev-form" class="form" autocomplete="off">
         <label class="field"><span>Project${REQ}</span>
           <select id="rev-project" name="project" required>
             <option value="">Select a project…</option>
-            ${S.projects.map((p) => `<option value="${p.id}" ${p.id === S.revProject ? "selected" : ""}>${esc(p.name)}</option>`).join("")}
+            ${liveProjects().map((p) => `<option value="${p.id}" ${p.id === S.revProject ? "selected" : ""}>${esc(p.name)}</option>`).join("")}
           </select></label>
         <label class="field"><span>Amount${REQ}</span>
           <div class="money-input" style="--sym-w:${sym.length}ch"><span>${esc(sym)}</span>
@@ -1630,6 +1691,7 @@ function renderSettings() {
   const tracked = S.sessions.reduce((a, s) => a + (s.seconds || 0), 0);
   const rev = S.revenue.reduce((a, r) => a + (r.amount || 0), 0);
   const since = u.metadata?.creationTime ? fmtDate(new Date(u.metadata.creationTime)) : "";
+  const archived = S.projects.length - liveProjects().length;
 
   v.innerHTML = `
   <header class="view-head"><div><h1>Settings</h1><p class="muted">Statuses, timer preferences and your account.</p></div></header>
@@ -1642,7 +1704,7 @@ function renderSettings() {
         <button class="btn ghost" data-action="logout">${icon("logout", 16)}Sign out</button>
       </div>
       <div class="mini-stats">
-        <div><b>${S.projects.length}</b><span>Projects</span></div>
+        <div><b>${liveProjects().length}</b><span>Projects</span></div>
         <div><b>${fmtDur(tracked)}</b><span>Time tracked</span></div>
         <div><b>${fmtMoney(rev, { maximumFractionDigits: 0 })}</b><span>Revenue logged</span></div>
         <div><b>${S.docs.length}</b><span>Documents</span></div>
@@ -1691,6 +1753,8 @@ function renderSettings() {
       <div class="data-actions">
         <div><div><b>Export</b><p>Download projects, sessions, revenue and history as JSON.</p></div>
           <button class="btn ghost small" data-action="export">${icon("download", 15)}Export JSON</button></div>
+        <div><div><b>Archive</b><p>${archived} archived project${archived === 1 ? "" : "s"}, hidden from the Projects tab.</p></div>
+          <button class="btn ghost small" data-action="view-archive">${icon("archive", 15)}View Archive</button></div>
         <div><div><b>Clear history</b><p>Removes the change log only. Nothing else is touched.</p></div>
           <button class="btn danger ghost small" data-action="clear-history">${icon("trash", 15)}Clear</button></div>
       </div>
@@ -1803,6 +1867,7 @@ actions["logout"] = async () => {
   await signOut(auth);
   location.hash = "";
 };
+actions["view-archive"] = () => openArchiveModal();
 actions["export"] = () => {
   const data = {
     exportedAt: new Date().toISOString(),
